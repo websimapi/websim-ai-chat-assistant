@@ -1,0 +1,642 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AI Chat Assistant</title>
+  <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.development.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
+      margin: 0;
+      padding: 0;
+      background: #f5f5f5;
+      color: #333;
+    }
+    .container {
+      max-width: 800px;
+      margin: 0 auto;
+      padding: 20px;
+    }
+    .header {
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .chat-container {
+      background: white;
+      border-radius: 8px;
+      box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+      padding: 20px;
+      margin-bottom: 20px;
+      height: 60vh;
+      overflow-y: auto;
+    }
+    .message {
+      padding: 15px;
+      margin-bottom: 15px;
+      border-radius: 8px;
+      max-width: 80%;
+      animation: fadeIn 0.3s ease-in-out;
+      position: relative;
+    }
+    .user-message {
+      background: #e1f5fe;
+      margin-left: auto;
+      border-bottom-right-radius: 0;
+    }
+    .ai-message {
+      background: #f0f0f0;
+      margin-right: auto;
+      border-bottom-left-radius: 0;
+    }
+    .message-content {
+      line-height: 1.5;
+    }
+    .message-meta {
+      font-size: 12px;
+      color: #888;
+      margin-top: 5px;
+      display: flex;
+      justify-content: space-between;
+    }
+    .username {
+      font-weight: bold;
+    }
+    .timestamp {
+      font-size: 11px;
+    }
+    .message-input-container {
+      display: flex;
+      margin-top: 20px;
+      position: sticky;
+      bottom: 0;
+    }
+    .message-input {
+      flex: 1;
+      padding: 15px;
+      border: 1px solid #ddd;
+      border-radius: 24px;
+      font-size: 16px;
+      outline: none;
+      transition: border-color 0.3s;
+    }
+    .message-input:focus {
+      border-color: #2196F3;
+    }
+    .send-button {
+      background: #2196F3;
+      color: white;
+      border: none;
+      border-radius: 24px;
+      padding: 0 20px;
+      margin-left: 10px;
+      cursor: pointer;
+      font-size: 16px;
+      transition: background 0.3s;
+    }
+    .send-button:hover {
+      background: #0b7dda;
+    }
+    .send-button:disabled {
+      background: #cccccc;
+      cursor: not-allowed;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(10px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .sync-indicator {
+      position: fixed;
+      bottom: 10px;
+      right: 10px;
+      background: rgba(0,0,0,0.7);
+      color: white;
+      padding: 5px 10px;
+      border-radius: 20px;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+    }
+    .sync-dot {
+      width: 8px;
+      height: 8px;
+      background-color: #4CAF50;
+      border-radius: 50%;
+      margin-right: 5px;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0% { opacity: 0.5; }
+      50% { opacity: 1; }
+      100% { opacity: 0.5; }
+    }
+    .error-message {
+      background: #fff0f0;
+      color: #e74c3c;
+      padding: 10px;
+      border-radius: 5px;
+      margin: 10px 0;
+      text-align: center;
+    }
+    .thinking {
+      display: flex;
+      align-items: center;
+      padding: 10px;
+      color: #888;
+      font-style: italic;
+    }
+    .thinking-dots {
+      display: flex;
+      margin-left: 8px;
+    }
+    .thinking-dot {
+      width: 6px;
+      height: 6px;
+      background: #888;
+      border-radius: 50%;
+      margin: 0 2px;
+      animation: thinkingDot 1.4s infinite ease-in-out;
+    }
+    .thinking-dot:nth-child(1) { animation-delay: 0s; }
+    .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes thinkingDot {
+      0%, 60%, 100% { transform: translateY(0); }
+      30% { transform: translateY(-5px); }
+    }
+    .ai-personality {
+      background: #f9f9f9;
+      border-radius: 8px;
+      padding: 15px;
+      margin-bottom: 20px;
+      border-left: 4px solid #2196F3;
+    }
+    .ai-personality h3 {
+      margin-top: 0;
+      color: #2196F3;
+    }
+    .ai-personality-content {
+      max-height: 150px;
+      overflow-y: auto;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    @media (max-width: 768px) {
+      .container {
+        padding: 10px;
+      }
+      .message {
+        max-width: 90%;
+      }
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useRef } = React;
+
+    // Initialize Websim database connection
+    const room = new WebsimSocket();
+
+    function AIChat() {
+      const [lastSyncTime, setLastSyncTime] = useState(null);
+      const [isSyncing, setIsSyncing] = useState(false);
+      const [error, setError] = useState(null);
+      const [message, setMessage] = useState("");
+      const [isThinking, setIsThinking] = useState(false);
+      const [personality, setPersonality] = useState([]);
+      const [currentUser, setCurrentUser] = useState(null);
+      const chatContainerRef = useRef(null);
+      const conversationHistoryRef = useRef([]);
+      const projectIdRef = useRef(null);
+
+      // Use React's useSyncExternalStore to sync with database
+      const comments = React.useSyncExternalStore(
+        room.collection('comment').subscribe,
+        room.collection('comment').getList
+      );
+
+      // Use React's useSyncExternalStore for the chat messages
+      const messages = React.useSyncExternalStore(
+        room.collection('chat_message').subscribe,
+        room.collection('chat_message').getList
+      );
+
+      // Scroll to bottom whenever messages change
+      useEffect(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        }
+      }, [messages]);
+
+      // Get current user
+      useEffect(() => {
+        const fetchCurrentUser = async () => {
+          try {
+            const user = await window.websim.getUser();
+            setCurrentUser(user);
+          } catch (err) {
+            console.error("Error getting current user:", err);
+          }
+        };
+        fetchCurrentUser();
+      }, []);
+
+      // Function to get current project ID
+      const getCurrentProjectId = async () => {
+        try {
+          // Try to get the current project from websim
+          const currentProject = await window.websim.getCurrentProject();
+          if (currentProject && currentProject.id) {
+            projectIdRef.current = currentProject.id;
+            return currentProject.id;
+          }
+          
+          // Fallback: For testing, you could return a hardcoded ID
+          return projectIdRef.current || "defaultProjectId";
+        } catch (err) {
+          console.error("Error getting project ID:", err);
+          return projectIdRef.current || "defaultProjectId";
+        }
+      };
+
+      // Function to parse comment content
+      const parseCommentContent = (comment) => {
+        if (!comment.content || !comment.content.children) {
+          return comment.raw_content || "No content";
+        }
+
+        // Extract text content from the DocumentNode structure
+        let text = "";
+        const extractText = (node) => {
+          if (!node) return;
+          
+          if (node.type === "text") {
+            text += node.text;
+          } else if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(extractText);
+          }
+        };
+
+        comment.content.children.forEach(extractText);
+        return text || comment.raw_content || "No content";
+      };
+
+      // Helper functions to extract content components
+      const extractTextNodes = (content) => {
+        if (!content || !content.children) return [];
+        
+        const textNodes = [];
+        const findTextNodes = (node) => {
+          if (!node) return;
+          
+          if (node.type === "text") {
+            textNodes.push({
+              text: node.text,
+              bold: node.bold || false,
+              italic: node.italic || false,
+              underline: node.underline || false,
+              strike: node.strike || false
+            });
+          } else if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(findTextNodes);
+          }
+        };
+        
+        content.children.forEach(findTextNodes);
+        return textNodes;
+      };
+      
+      const extractLinkNodes = (content) => {
+        if (!content || !content.children) return [];
+        
+        const linkNodes = [];
+        const findLinkNodes = (node) => {
+          if (!node) return;
+          
+          if (node.type === "link") {
+            linkNodes.push({
+              url: node.url,
+              text: node.children?.[0]?.text || ""
+            });
+          } else if (node.children && Array.isArray(node.children)) {
+            node.children.forEach(findLinkNodes);
+          }
+        };
+        
+        content.children.forEach(findLinkNodes);
+        return linkNodes;
+      };
+      
+      const countParagraphs = (content) => {
+        if (!content || !content.children) return 0;
+        return content.children.filter(node => node.type === "paragraph").length;
+      };
+
+      // Function to check if comment is a duplicate
+      const isDuplicateComment = (metadataComment, existingComments) => {
+        // First check: exact metadata_id match
+        if (existingComments.some(c => c.metadata_id === metadataComment.id)) {
+          return true;
+        }
+        
+        // Second check: matching content, username, and timestamp
+        const parsedContent = parseCommentContent(metadataComment);
+        const username = metadataComment.author?.username || "anonymous";
+        const timestamp = metadataComment.created_at;
+        
+        return existingComments.some(c => 
+          c.username === username && 
+          c.message === parsedContent && 
+          c.timestamp === timestamp
+        );
+      };
+
+      // Function to fetch metadata comments (AI's personality/DMN)
+      const fetchMetadataComments = async () => {
+        try {
+          setIsSyncing(true);
+          setError(null);
+          
+          // Get current logged-in user
+          const currentUser = await window.websim.getUser();
+          const currentUsername = currentUser?.username;
+          
+          const projectId = await getCurrentProjectId();
+          if (!projectId) {
+            throw new Error("Could not determine project ID");
+          }
+          
+          // Make the actual API call to get metadata comments
+          const response = await fetch(`/api/v1/projects/${projectId}/comments`);
+          
+          if (!response.ok) {
+            throw new Error(`API returned status ${response.status}`);
+          }
+          
+          const data = await response.json();
+          const metadataComments = data.comments?.data || [];
+          
+          // Extract comment content for AI personality
+          const personalityTexts = metadataComments.map(item => parseCommentContent(item.comment));
+          setPersonality(personalityTexts);
+          
+          // Get all existing comments for comparison
+          const allExistingComments = room.collection('comment').getList();
+          
+          // Process and sync each comment to our database
+          for (const item of metadataComments) {
+            const comment = item.comment;
+            const commentUsername = comment.author?.username || "anonymous";
+            
+            // Only sync if the comment username matches the current user's username
+            if (currentUsername === commentUsername) {
+              // Check if comment already exists in our database using comprehensive duplicate check
+              if (!isDuplicateComment(comment, allExistingComments)) {
+                // Add new comment to database with all metadata
+                await room.collection('comment').create({
+                  metadata_id: comment.id,
+                  username: commentUsername,
+                  message: parseCommentContent(comment),
+                  timestamp: comment.created_at,
+                  avatar_url: comment.author?.avatar_url || null,
+                  parent_comment_id: comment.parent_comment_id,
+                  
+                  // Store author data in individual columns instead of as a whole object
+                  author_id: comment.author?.id || null,
+                  author_created_at: comment.author?.created_at || null,
+                  author_description: comment.author?.description || null,
+                  author_twitter: comment.author?.twitter || null,
+                  author_discord_username: comment.author?.discord_username || null,
+                  author_discord_id: comment.author?.discord_id || null,
+                  author_is_admin: comment.author?.is_admin || false,
+                  
+                  // Store all additional metadata
+                  project_id: comment.project_id,
+                  raw_content: comment.raw_content,
+                  deleted: comment.deleted || false,
+                  pinned: comment.pinned || false,
+                  pinned_by: comment.pinned_by,
+                  reactions: comment.reactions,
+                  reply_count: comment.reply_count || 0,
+                  
+                  // Store content object in individual fields
+                  content_type: comment.content?.type || null,
+                  content_children: comment.content?.children || [],
+                  // Extract other important content properties if needed
+                  content_text_nodes: extractTextNodes(comment.content),
+                  content_link_nodes: extractLinkNodes(comment.content),
+                  content_paragraph_count: countParagraphs(comment.content)
+                });
+              }
+            }
+          }
+          
+          setLastSyncTime(new Date());
+        } catch (error) {
+          console.error('Error syncing comments:', error);
+          setError(`Failed to sync comments: ${error.message}`);
+        } finally {
+          setIsSyncing(false);
+        }
+      };
+
+      // Format timestamp
+      const formatTimestamp = (timestamp) => {
+        try {
+          const date = new Date(timestamp);
+          return date.toLocaleString();
+        } catch (e) {
+          return timestamp;
+        }
+      };
+
+      // Handle sending a message to the AI
+      const handleSendMessage = async () => {
+        if (!message.trim()) return;
+        
+        try {
+          // Get current user
+          const user = currentUser || await window.websim.getUser();
+          const username = user?.username || 'anonymous';
+          
+          // Save user message to the database
+          const userMessage = await room.collection('chat_message').create({
+            type: 'user',
+            content: message,
+            username: username,
+            timestamp: new Date().toISOString(),
+            avatar_url: user?.avatar_url || `https://images.websim.ai/avatar/${username}`
+          });
+          
+          // Update conversation history for context
+          conversationHistoryRef.current.push({
+            role: "user",
+            content: message
+          });
+          
+          // Only keep the last 10 messages to avoid token limits
+          if (conversationHistoryRef.current.length > 10) {
+            conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
+          }
+          
+          // Clear the input
+          setMessage("");
+          
+          // Show thinking indicator
+          setIsThinking(true);
+          
+          // Create personality context from synced comments
+          const personalityContext = personality.length > 0 
+            ? `Your personality and knowledge base is defined by these comments: ${personality.join(" ")}` 
+            : "You are a helpful AI assistant.";
+          
+          // Generate AI response using LLM
+          const completion = await websim.chat.completions.create({
+            messages: [
+              {
+                role: "system",
+                content: `${personalityContext} You act as an AI that uses the comments as your Default Mode Network (DMN) to define your personality. 
+                You have a cerebral cortex for storing memories (database) and a prefrontal cortex for retrieving memories. 
+                Be conversational, helpful, and maintain your personality as defined in the comments.`
+              },
+              ...conversationHistoryRef.current
+            ],
+          });
+          
+          // Get AI response
+          const aiResponse = completion.content;
+          
+          // Save AI response to the database
+          await room.collection('chat_message').create({
+            type: 'ai',
+            content: aiResponse,
+            username: 'AI Assistant',
+            timestamp: new Date().toISOString(),
+            avatar_url: 'https://via.placeholder.com/40?text=AI'
+          });
+          
+          // Update conversation history with AI response
+          conversationHistoryRef.current.push({
+            role: "assistant",
+            content: aiResponse
+          });
+          
+        } catch (error) {
+          console.error('Error sending message:', error);
+          setError(`Failed to send message: ${error.message}`);
+        } finally {
+          setIsThinking(false);
+        }
+      };
+
+      // Set up periodic sync for personality/DMN comments
+      useEffect(() => {
+        // Initial fetch
+        fetchMetadataComments();
+        
+        // Set up interval for periodic sync (7 seconds)
+        const intervalId = setInterval(fetchMetadataComments, 7000);
+        
+        // Clean up on unmount
+        return () => clearInterval(intervalId);
+      }, []);
+
+      return (
+        <div className="container">
+          <div className="header">
+            <h1>AI Assistant</h1>
+          </div>
+          
+          {error && (
+            <div className="error-message">{error}</div>
+          )}
+          
+          {personality.length > 0 && (
+            <div className="ai-personality">
+              <h3>AI Personality (Default Mode Network)</h3>
+              <div className="ai-personality-content">
+                {personality.map((text, index) => (
+                  <p key={index}>{text}</p>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          <div className="chat-container" ref={chatContainerRef}>
+            {messages.length === 0 ? (
+              <div className="status">Start chatting with the AI assistant!</div>
+            ) : (
+              <>
+                {messages
+                  .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+                  .map(msg => (
+                    <div 
+                      key={msg.id} 
+                      className={`message ${msg.type === 'user' ? 'user-message' : 'ai-message'}`}
+                    >
+                      <div className="message-content">{msg.content}</div>
+                      <div className="message-meta">
+                        <span className="username">
+                          {msg.type === 'user' ? `@${msg.username}` : 'AI Assistant'}
+                        </span>
+                        <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
+                      </div>
+                    </div>
+                  ))
+                }
+                
+                {isThinking && (
+                  <div className="thinking">
+                    <span>AI is thinking</span>
+                    <div className="thinking-dots">
+                      <div className="thinking-dot"></div>
+                      <div className="thinking-dot"></div>
+                      <div className="thinking-dot"></div>
+                    </div>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+          
+          <div className="message-input-container">
+            <input
+              type="text"
+              className="message-input"
+              placeholder="Type your message here..."
+              value={message}
+              onChange={(e) => setMessage(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+              disabled={isThinking}
+            />
+            <button 
+              className="send-button" 
+              onClick={handleSendMessage}
+              disabled={!message.trim() || isThinking}
+            >
+              Send
+            </button>
+          </div>
+          
+          {lastSyncTime && (
+            <div className="sync-indicator">
+              <div className="sync-dot"></div>
+              <span>{isSyncing ? 'Syncing personality...' : `Last sync: ${lastSyncTime.toLocaleTimeString()}`}</span>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    // Render the app
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<AIChat />);
+  </script>
+<script defer src="https://static.cloudflareinsights.com/beacon.min.js/v8c78df7c7c0f484497ecbca7046644da1771523124516" integrity="sha512-8DS7rgIrAmghBFwoOTujcf6D9rXvH8xm8JQ1Ja01h9QX8EzXldiszufYa4IFfKdLUKTTrnSFXLDkUEOTrZQ8Qg==" data-cf-beacon='{"version":"2024.11.0","token":"4c6229722a6346bc8eb5cb0e5eae5d41","server_timing":{"name":{"cfCacheStatus":true,"cfEdge":true,"cfExtPri":true,"cfL4":true,"cfOrigin":true,"cfSpeedBrain":true},"location_startswith":null}}' crossorigin="anonymous"></script>
+</body>
+</html>
