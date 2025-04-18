@@ -214,58 +214,57 @@
       const conversationHistoryRef = useRef([]);
       const projectIdRef = useRef(null);
 
-      // Use React's useSyncExternalStore for the chat messages
-      const messages = React.useSyncExternalStore(
-        room.collection('chat_message').subscribe,
-        room.collection('chat_message').getList
-      );
-
-      // Use React's useSyncExternalStore to sync with database for comments/personality
+      // Use React's useSyncExternalStore to sync with database
       const comments = React.useSyncExternalStore(
         room.collection('comment').subscribe,
         room.collection('comment').getList
       );
 
-      // Get current user on component mount
+      // Use React's useSyncExternalStore for the chat messages
+      // Sort the messages by timestamp in the getList function
+      const messages = React.useSyncExternalStore(
+        room.collection('chat_message').subscribe,
+        () => {
+          const chatMessages = room.collection('chat_message').getList();
+          // Return a new array sorted by timestamp to ensure React detects the change
+          return [...chatMessages].sort((a, b) => 
+            new Date(a.timestamp) - new Date(b.timestamp)
+          );
+        }
+      );
+
+      // Scroll to bottom whenever messages change
+      useEffect(() => {
+        if (chatContainerRef.current) {
+          chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
+        }
+      }, [messages]);
+
+      // Get current user
       useEffect(() => {
         const fetchCurrentUser = async () => {
           try {
             const user = await window.websim.getUser();
-            console.log("Current user:", user);
             setCurrentUser(user);
+            console.log("Current user:", user);
           } catch (err) {
             console.error("Error getting current user:", err);
-            setError("Failed to get current user information");
           }
         };
         fetchCurrentUser();
       }, []);
 
-      // Update personality when comments change
-      useEffect(() => {
-        if (comments && comments.length > 0) {
-          const personalityTexts = comments.map(comment => comment.message);
-          setPersonality(personalityTexts);
-        }
-      }, [comments]);
-
-      // Scroll to bottom whenever messages change
-      useEffect(() => {
-        if (chatContainerRef.current) {
-          setTimeout(() => {
-            chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
-          }, 100); // Small delay to ensure rendering is complete
-        }
-      }, [messages]);
-
       // Function to get current project ID
       const getCurrentProjectId = async () => {
         try {
+          // Try to get the current project from websim
           const currentProject = await window.websim.getCurrentProject();
           if (currentProject && currentProject.id) {
             projectIdRef.current = currentProject.id;
             return currentProject.id;
           }
+          
+          // Fallback: For testing, you could return a hardcoded ID
           return projectIdRef.current || "defaultProjectId";
         } catch (err) {
           console.error("Error getting project ID:", err);
@@ -273,12 +272,13 @@
         }
       };
 
-      // Parse comment content function
+      // Function to parse comment content
       const parseCommentContent = (comment) => {
         if (!comment.content || !comment.content.children) {
           return comment.raw_content || "No content";
         }
 
+        // Extract text content from the DocumentNode structure
         let text = "";
         const extractText = (node) => {
           if (!node) return;
@@ -294,7 +294,7 @@
         return text || comment.raw_content || "No content";
       };
 
-      // Helper functions for content extraction
+      // Helper functions to extract content components
       const extractTextNodes = (content) => {
         if (!content || !content.children) return [];
         
@@ -379,8 +379,6 @@
             throw new Error("Could not determine project ID");
           }
           
-          console.log(`Fetching comments for project ${projectId}`);
-          
           // Make the actual API call to get metadata comments
           const response = await fetch(`/api/v1/projects/${projectId}/comments`);
           
@@ -390,7 +388,6 @@
           
           const data = await response.json();
           const metadataComments = data.comments?.data || [];
-          console.log(`Fetched ${metadataComments.length} metadata comments`);
           
           // Extract comment content for AI personality
           const personalityTexts = metadataComments.map(item => parseCommentContent(item.comment));
@@ -408,7 +405,6 @@
             if (currentUsername === commentUsername) {
               // Check if comment already exists in our database using comprehensive duplicate check
               if (!isDuplicateComment(comment, allExistingComments)) {
-                console.log(`Adding new comment from ${commentUsername}`);
                 // Add new comment to database with all metadata
                 await room.collection('comment').create({
                   metadata_id: comment.id,
@@ -418,7 +414,7 @@
                   avatar_url: comment.author?.avatar_url || null,
                   parent_comment_id: comment.parent_comment_id,
                   
-                  // Author data in individual columns
+                  // Store author data in individual columns instead of as a whole object
                   author_id: comment.author?.id || null,
                   author_created_at: comment.author?.created_at || null,
                   author_description: comment.author?.description || null,
@@ -427,7 +423,7 @@
                   author_discord_id: comment.author?.discord_id || null,
                   author_is_admin: comment.author?.is_admin || false,
                   
-                  // Additional metadata
+                  // Store all additional metadata
                   project_id: comment.project_id,
                   raw_content: comment.raw_content,
                   deleted: comment.deleted || false,
@@ -436,9 +432,10 @@
                   reactions: comment.reactions,
                   reply_count: comment.reply_count || 0,
                   
-                  // Content breakdown
+                  // Store content object in individual fields
                   content_type: comment.content?.type || null,
                   content_children: comment.content?.children || [],
+                  // Extract other important content properties if needed
                   content_text_nodes: extractTextNodes(comment.content),
                   content_link_nodes: extractLinkNodes(comment.content),
                   content_paragraph_count: countParagraphs(comment.content)
@@ -462,7 +459,8 @@
           const date = new Date(timestamp);
           return date.toLocaleString();
         } catch (e) {
-          return timestamp;
+          console.error("Error formatting timestamp:", timestamp, e);
+          return "Unknown time";
         }
       };
 
@@ -475,15 +473,12 @@
           const user = currentUser || await window.websim.getUser();
           const username = user?.username || 'anonymous';
           
-          const messageContent = message.trim();
-          setMessage(""); // Clear input immediately
-          
-          console.log(`Sending message: ${messageContent}`);
+          console.log("Sending message as:", username);
           
           // Save user message to the database
           const userMessage = await room.collection('chat_message').create({
             type: 'user',
-            content: messageContent,
+            content: message,
             username: username,
             timestamp: new Date().toISOString(),
             avatar_url: user?.avatar_url || `https://images.websim.ai/avatar/${username}`
@@ -494,13 +489,16 @@
           // Update conversation history for context
           conversationHistoryRef.current.push({
             role: "user",
-            content: messageContent
+            content: message
           });
           
           // Only keep the last 10 messages to avoid token limits
           if (conversationHistoryRef.current.length > 10) {
             conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
           }
+          
+          // Clear the input
+          setMessage("");
           
           // Show thinking indicator
           setIsThinking(true);
@@ -509,8 +507,6 @@
           const personalityContext = personality.length > 0 
             ? `Your personality and knowledge base is defined by these comments: ${personality.join(" ")}` 
             : "You are a helpful AI assistant.";
-          
-          console.log("Generating AI response...");
           
           // Generate AI response using LLM
           const completion = await websim.chat.completions.create({
@@ -527,6 +523,7 @@
           
           // Get AI response
           const aiResponse = completion.content;
+          
           console.log("AI response generated:", aiResponse);
           
           // Save AI response to the database
@@ -566,10 +563,10 @@
         return () => clearInterval(intervalId);
       }, []);
 
-      // Sort messages by timestamp for display
-      const sortedMessages = [...messages].sort((a, b) => {
-        return new Date(a.timestamp) - new Date(b.timestamp);
-      });
+      // Debug messages collection whenever it changes
+      useEffect(() => {
+        console.log("Current messages in database:", messages);
+      }, [messages]);
 
       return (
         <div className="container">
@@ -593,11 +590,11 @@
           )}
           
           <div className="chat-container" ref={chatContainerRef}>
-            {sortedMessages.length === 0 ? (
+            {messages.length === 0 ? (
               <div className="status">Start chatting with the AI assistant!</div>
             ) : (
               <>
-                {sortedMessages.map(msg => (
+                {messages.map(msg => (
                   <div 
                     key={msg.id} 
                     className={`message ${msg.type === 'user' ? 'user-message' : 'ai-message'}`}
@@ -605,7 +602,16 @@
                     <div className="message-content">{msg.content}</div>
                     <div className="message-meta">
                       <span className="username">
-                        {msg.type === 'user' ? `@${msg.username}` : 'AI Assistant'}
+                        {msg.type === 'user' ? (
+                          <span>
+                            <img 
+                              src={msg.avatar_url || `https://images.websim.ai/avatar/${msg.username}`} 
+                              alt={msg.username}
+                              style={{ width: '20px', height: '20px', borderRadius: '50%', marginRight: '5px', verticalAlign: 'middle' }}
+                            />
+                            @{msg.username}
+                          </span>
+                        ) : 'AI Assistant'}
                       </span>
                       <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
                     </div>
@@ -633,7 +639,7 @@
               placeholder="Type your message here..."
               value={message}
               onChange={(e) => setMessage(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && !isThinking && handleSendMessage()}
+              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
               disabled={isThinking}
             />
             <button 
