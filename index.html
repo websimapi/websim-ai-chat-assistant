@@ -199,7 +199,6 @@
   <script type="text/babel">
     const { useState, useEffect, useRef } = React;
 
-    // Initialize Websim database connection
     const room = new WebsimSocket();
 
     function AIChat() {
@@ -215,251 +214,195 @@
       const conversationHistoryRef = useRef([]);
       const projectIdRef = useRef(null);
 
-      // Use React's useSyncExternalStore for the chat messages only
+      // Fetch all chat messages in the room
       const messages = React.useSyncExternalStore(
         room.collection('chat_message').subscribe,
         room.collection('chat_message').getList
       );
 
-      // Scroll to bottom whenever messages change
+      // Always auto-scroll to the bottom of chat on message update
       useEffect(() => {
         if (chatContainerRef.current) {
           chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
         }
-      }, [messages]);
+      }, [messages, isThinking]);
 
-      // Get current user
+      // Fetch the current user info
       useEffect(() => {
         const fetchCurrentUser = async () => {
           try {
             const user = await window.websim.getUser();
             setCurrentUser(user);
           } catch (err) {
-            console.error("Error getting current user:", err);
+            setCurrentUser(null);
           }
         };
         fetchCurrentUser();
       }, []);
 
-      // Function to get current project ID
+      // Get current project ID and cache it in ref (for comments fetch)
       const getCurrentProjectId = async () => {
+        if (projectIdRef.current) return projectIdRef.current;
         try {
-          // Try to get the current project from websim
           const currentProject = await window.websim.getCurrentProject();
           if (currentProject && currentProject.id) {
             projectIdRef.current = currentProject.id;
             return currentProject.id;
           }
-          
-          // Fallback: For testing, you could return a hardcoded ID
-          return projectIdRef.current || "defaultProjectId";
+          return null;
         } catch (err) {
-          console.error("Error getting project ID:", err);
-          return projectIdRef.current || "defaultProjectId";
+          return null;
         }
       };
 
-      // Function to parse comment content
-      const parseCommentContent = (comment) => {
-        if (!comment.content || !comment.content.children) {
-          return comment.raw_content || "No content";
+      // Parse out readable text from DocumentNode-style comment
+      function parseCommentText(comment) {
+        function walk(node) {
+          if (!node) return '';
+          if (node.type === "text") return node.text;
+          if (Array.isArray(node.children)) return node.children.map(walk).join('');
+          return '';
         }
+        if (comment.content && comment.content.type === "document" && Array.isArray(comment.content.children)) {
+          return comment.content.children.map(walk).join('').trim();
+        } else if (comment.raw_content) {
+          return comment.raw_content;
+        }
+        return '';
+      }
 
-        // Extract text content from the DocumentNode structure
-        let text = "";
-        const extractText = (node) => {
-          if (!node) return;
-          
-          if (node.type === "text") {
-            text += node.text;
-          } else if (node.children && Array.isArray(node.children)) {
-            node.children.forEach(extractText);
-          }
-        };
-
-        comment.content.children.forEach(extractText);
-        return text || comment.raw_content || "No content";
-      };
-
-      // Function to fetch metadata comments (AI's personality/DMN)
+      // Fetch metadata comments, no longer storing in local DB, just for personality/DMN context
       const fetchMetadataComments = async () => {
+        setIsSyncing(true);
+        setError(null);
         try {
-          setIsSyncing(true);
-          setError(null);
-          
           const projectId = await getCurrentProjectId();
-          if (!projectId) {
-            throw new Error("Could not determine project ID");
-          }
-          
-          // Make the API call to get metadata comments
-          const response = await fetch(`/api/v1/projects/${projectId}/comments`);
-          
-          if (!response.ok) {
-            throw new Error(`API returned status ${response.status}`);
-          }
-          
+          if (!projectId) throw new Error("No project ID found");
+          const response = await fetch(`/api/v1/projects/${projectId}/comments?first=100&sort_by=created_at&sort_order=desc`);
+          if (!response.ok) throw new Error(`API returned status ${response.status}`);
           const data = await response.json();
-          const comments = data.comments?.data || [];
-          
-          // Store the full metadata comments for reference
-          setMetadataComments(comments);
-          
-          // Extract comment content for AI personality
-          const personalityTexts = comments.map(item => parseCommentContent(item.comment));
-          setPersonality(personalityTexts);
-          
+          const allComments = data.comments?.data || [];
+          setMetadataComments(allComments);
+
+          // Compose DMN personality summary from comments pulled from metadata
+          const texts = allComments.map(item => parseCommentText(item.comment)).filter(Boolean);
+          setPersonality(texts);
+
           setLastSyncTime(new Date());
-        } catch (error) {
-          console.error('Error fetching comments:', error);
-          setError(`Failed to fetch comments: ${error.message}`);
+        } catch (err) {
+          setError('Failed to load metadata comments: ' + err.message);
         } finally {
           setIsSyncing(false);
         }
       };
 
-      // Format timestamp
-      const formatTimestamp = (timestamp) => {
+      // Format ISO timestamp for message display
+      function formatTimestamp(ts) {
         try {
-          const date = new Date(timestamp);
-          return date.toLocaleString();
-        } catch (e) {
-          return timestamp;
+          const d = new Date(ts);
+          return d.toLocaleTimeString();
+        } catch {
+          return ts;
         }
-      };
+      }
 
-      // Handle storing deep long-term memory
-      const storeMemory = async (text, context) => {
+      // Long-term memory storage (as Cerebral Cortex)
+      async function storeMemory(text, context) {
         try {
-          // Store only important information as long-term memory
           await room.collection('long_term_memory').create({
             content: text,
             context: context,
             timestamp: new Date().toISOString(),
             username: currentUser?.username || 'system'
           });
-        } catch (error) {
-          console.error('Error storing memory:', error);
+        } catch (err) {
+          // swallow
         }
-      };
+      }
 
-      // Retrieve relevant memories based on current conversation
-      const retrieveRelevantMemories = () => {
+      // Simple memory retrieval (as Prefrontal Cortex)
+      function retrieveRelevantMemories() {
         try {
-          // Get all memories
           const memories = room.collection('long_term_memory').getList();
-          
-          // For demonstration, return all memories
-          // In a real implementation, you would filter based on relevance to current context
-          return memories.map(memory => memory.content).join(" ");
-        } catch (error) {
-          console.error('Error retrieving memories:', error);
+          return memories.map(m => m.content).join(" ");
+        } catch {
           return "";
         }
-      };
+      }
 
-      // Handle sending a message to the AI
-      const handleSendMessage = async () => {
+      // Handle user sending a message to the AI
+      async function handleSendMessage() {
         if (!message.trim()) return;
-        
         try {
-          // Get current user
+          setError(null);
+          // Store user chat
           const user = currentUser || await window.websim.getUser();
           const username = user?.username || 'anonymous';
-          
-          // Save user message to the chat database
-          const userMessage = await room.collection('chat_message').create({
+          await room.collection('chat_message').create({
             type: 'user',
             content: message,
             username: username,
             timestamp: new Date().toISOString(),
             avatar_url: user?.avatar_url || `https://images.websim.ai/avatar/${username}`
           });
-          
-          // Update conversation history for context
-          conversationHistoryRef.current.push({
-            role: "user",
-            content: message
-          });
-          
-          // Only keep the last 10 messages to avoid token limits
-          if (conversationHistoryRef.current.length > 10) {
-            conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
-          }
-          
-          // Clear the input
+          // Push into local conversation history
+          conversationHistoryRef.current.push({ role: "user", content: message });
+          conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
+
           setMessage("");
-          
-          // Show thinking indicator
           setIsThinking(true);
-          
-          // Create personality context from synced comments
-          const personalityContext = personality.length > 0 
-            ? `Your personality and knowledge base is defined by these comments: ${personality.join(" ")}` 
-            : "You are a helpful AI assistant.";
-          
-          // Retrieve relevant long-term memories
-          const relevantMemories = retrieveRelevantMemories();
-          const memoryContext = relevantMemories 
-            ? `Here are relevant memories from your long-term storage: ${relevantMemories}` 
+
+          // Compose DMN/personality context (real-time from comments)
+          const personalityContext = personality.length > 0
+            ? `Your personality is defined by these comments: ${personality.join(" ")}`
+            : "You are a helpful assistant.";
+
+          // Retrieve long term memories for context
+          const memoryContext = retrieveRelevantMemories()
+            ? `Here are relevant memories from your long-term storage: ${retrieveRelevantMemories()}`
             : "";
-          
-          // Generate AI response using LLM
+
+          // Generate LLM AI response
           const completion = await websim.chat.completions.create({
             messages: [
               {
                 role: "system",
                 content: `${personalityContext} ${memoryContext} 
-                You act as an AI that uses the comments as your Default Mode Network (DMN) to define your personality. 
-                You have a cerebral cortex for storing memories (database) and a prefrontal cortex for retrieving memories. 
-                Be conversational, helpful, and maintain your personality as defined in the comments.`
+                  You act as an AI that uses the comments as your Default Mode Network (DMN). 
+                  You have a cerebral cortex for memories (database) and a prefrontal cortex for retrieving memories. 
+                  Be conversational and helpful.`
               },
               ...conversationHistoryRef.current
-            ],
+            ]
           });
-          
-          // Get AI response
           const aiResponse = completion.content;
-          
-          // Save AI response to the chat database
+          // Store AI response in chat
           await room.collection('chat_message').create({
-            type: 'ai',
+            type: "ai",
             content: aiResponse,
             username: 'AI Assistant',
             timestamp: new Date().toISOString(),
             avatar_url: 'https://via.placeholder.com/40?text=AI'
           });
-          
-          // Update conversation history with AI response
-          conversationHistoryRef.current.push({
-            role: "assistant",
-            content: aiResponse
-          });
-          
-          // Determine if this conversation contains important information to remember
-          // This would typically involve more sophisticated analysis
-          if (aiResponse.length > 100 || message.includes("remember this")) {
-            const context = `User: ${message}\nAI: ${aiResponse}`;
-            await storeMemory(aiResponse, context);
+
+          conversationHistoryRef.current.push({ role: "assistant", content: aiResponse });
+          conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
+
+          // If the chat contains "remember this" or is long, store as memory
+          if (aiResponse.length > 100 || message.toLowerCase().includes("remember this")) {
+            await storeMemory(aiResponse, `User: ${message}\nAI: ${aiResponse}`);
           }
-          
-        } catch (error) {
-          console.error('Error sending message:', error);
-          setError(`Failed to send message: ${error.message}`);
+        } catch (err) {
+          setError('Failed to send message: ' + err.message);
         } finally {
           setIsThinking(false);
         }
-      };
+      }
 
-      // Set up periodic sync for personality/DMN comments
+      // Establish 7-second cycle to refresh DMN comments from server
       useEffect(() => {
-        // Initial fetch
         fetchMetadataComments();
-        
-        // Set up interval for periodic sync (7 seconds)
         const intervalId = setInterval(fetchMetadataComments, 7000);
-        
-        // Clean up on unmount
         return () => clearInterval(intervalId);
       }, []);
 
@@ -468,45 +411,38 @@
           <div className="header">
             <h1>AI Assistant</h1>
           </div>
-          
-          {error && (
-            <div className="error-message">{error}</div>
-          )}
-          
+          {error && <div className="error-message">{error}</div>}
           {personality.length > 0 && (
             <div className="ai-personality">
               <h3>AI Personality (Default Mode Network)</h3>
               <div className="ai-personality-content">
-                {personality.map((text, index) => (
-                  <p key={index}>{text}</p>
-                ))}
+                {personality.map((text, idx) =>
+                  <p key={idx}>{text}</p>
+                )}
               </div>
             </div>
           )}
-          
           <div className="chat-container" ref={chatContainerRef}>
-            {messages.length === 0 ? (
+            {messages.length === 0 && !isThinking ? (
               <div className="status">Start chatting with the AI assistant!</div>
             ) : (
               <>
                 {messages
+                  .filter(msg => typeof msg === 'object' && msg && msg.content) // Defensive
                   .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
                   .map(msg => (
-                    <div 
-                      key={msg.id} 
-                      className={`message ${msg.type === 'user' ? 'user-message' : 'ai-message'}`}
+                    <div
+                      key={msg.id}
+                      className={`message ${msg.type === "user" ? 'user-message' : 'ai-message'}`}
                     >
                       <div className="message-content">{msg.content}</div>
                       <div className="message-meta">
-                        <span className="username">
-                          {msg.type === 'user' ? `@${msg.username}` : 'AI Assistant'}
-                        </span>
+                        <span className="username">{msg.type === "user" ? `@${msg.username}` : 'AI Assistant'}</span>
                         <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
                       </div>
                     </div>
                   ))
                 }
-                
                 {isThinking && (
                   <div className="thinking">
                     <span>AI is thinking</span>
@@ -520,37 +456,35 @@
               </>
             )}
           </div>
-          
           <div className="message-input-container">
             <input
               type="text"
               className="message-input"
               placeholder="Type your message here..."
               value={message}
-              onChange={(e) => setMessage(e.target.value)}
-              onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+              onChange={e => setMessage(e.target.value)}
+              onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
               disabled={isThinking}
             />
-            <button 
-              className="send-button" 
+            <button
+              className="send-button"
               onClick={handleSendMessage}
               disabled={!message.trim() || isThinking}
-            >
-              Send
-            </button>
+            >Send</button>
           </div>
-          
           {lastSyncTime && (
             <div className="sync-indicator">
               <div className="sync-dot"></div>
-              <span>{isSyncing ? 'Syncing personality...' : `Last sync: ${lastSyncTime.toLocaleTimeString()}`}</span>
+              <span>
+                {isSyncing ? 'Syncing personality...' : `Last sync: ${lastSyncTime.toLocaleTimeString()}`}
+              </span>
             </div>
           )}
         </div>
       );
     }
 
-    // Render the app
+    // Render React component
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<AIChat />);
   </script>
