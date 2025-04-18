@@ -7,6 +7,7 @@
   <script src="https://cdn.jsdelivr.net/npm/react@18/umd/react.development.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/react-dom@18/umd/react-dom.development.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
   <style>
     body {
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, 'Open Sans', 'Helvetica Neue', sans-serif;
@@ -23,6 +24,17 @@
     .header {
       text-align: center;
       margin-bottom: 20px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+    .header h1 {
+      margin-bottom: 5px;
+    }
+    .header-subtitle {
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 15px;
     }
     .chat-container {
       background: white;
@@ -40,6 +52,20 @@
       max-width: 80%;
       animation: fadeIn 0.3s ease-in-out;
       position: relative;
+      display: flex;
+      flex-direction: column;
+    }
+    .message-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      margin-right: 10px;
+      object-fit: cover;
     }
     .user-message {
       background: #e1f5fe;
@@ -53,6 +79,25 @@
     }
     .message-content {
       line-height: 1.5;
+    }
+    .message-content p {
+      margin: 0 0 10px 0;
+    }
+    .message-content p:last-child {
+      margin-bottom: 0;
+    }
+    .message-content pre {
+      background: #f8f8f8;
+      padding: 10px;
+      border-radius: 4px;
+      overflow-x: auto;
+      font-size: 14px;
+    }
+    .message-content code {
+      background: #f8f8f8;
+      padding: 2px 4px;
+      border-radius: 4px;
+      font-size: 14px;
     }
     .message-meta {
       font-size: 12px;
@@ -172,16 +217,49 @@
       padding: 15px;
       margin-bottom: 20px;
       border-left: 4px solid #2196F3;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.1);
     }
     .ai-personality h3 {
       margin-top: 0;
       color: #2196F3;
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      user-select: none;
+    }
+    .ai-personality h3 .toggle-icon {
+      margin-left: 8px;
+      font-size: 16px;
+      transform: rotate(0deg);
+      transition: transform 0.3s ease;
+    }
+    .ai-personality h3 .toggle-icon.collapsed {
+      transform: rotate(-90deg);
     }
     .ai-personality-content {
       max-height: 150px;
       overflow-y: auto;
       font-size: 14px;
       line-height: 1.5;
+      transition: max-height 0.3s ease;
+    }
+    .ai-personality-content.collapsed {
+      max-height: 0;
+      overflow: hidden;
+    }
+    .status {
+      text-align: center;
+      color: #888;
+      padding: 20px;
+      font-style: italic;
+    }
+    .badge {
+      background-color: #2196F3;
+      color: white;
+      border-radius: 12px;
+      padding: 4px 8px;
+      font-size: 12px;
+      margin-left: 8px;
     }
     @media (max-width: 768px) {
       .container {
@@ -202,6 +280,25 @@
     // Initialize Websim database connection
     const room = new WebsimSocket();
 
+    // Create a component for rendering markdown content
+    function MarkdownContent({ content }) {
+      const createMarkup = () => {
+        try {
+          return { __html: marked.parse(content) };
+        } catch (error) {
+          console.error("Error parsing markdown:", error);
+          return { __html: content };
+        }
+      };
+
+      return (
+        <div 
+          className="message-content"
+          dangerouslySetInnerHTML={createMarkup()} 
+        />
+      );
+    }
+
     function AIChat() {
       const [lastSyncTime, setLastSyncTime] = useState(null);
       const [isSyncing, setIsSyncing] = useState(false);
@@ -209,6 +306,7 @@
       const [message, setMessage] = useState("");
       const [isThinking, setIsThinking] = useState(false);
       const [personality, setPersonality] = useState([]);
+      const [personalityCollapsed, setPersonalityCollapsed] = useState(false);
       const [currentUser, setCurrentUser] = useState(null);
       const chatContainerRef = useRef(null);
       const conversationHistoryRef = useRef([]);
@@ -226,12 +324,26 @@
         room.collection('chat_message').getList
       );
 
+      // Load conversation history from stored messages when component mounts
+      useEffect(() => {
+        if (messages.length > 0) {
+          const sortedMessages = [...messages].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+          const history = sortedMessages.map(msg => ({
+            role: msg.type === 'user' ? 'user' : 'assistant',
+            content: msg.content
+          }));
+          
+          // Only keep the last 10 messages to avoid token limits
+          conversationHistoryRef.current = history.slice(-10);
+        }
+      }, []);
+
       // Scroll to bottom whenever messages change
       useEffect(() => {
         if (chatContainerRef.current) {
           chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
         }
-      }, [messages]);
+      }, [messages, isThinking]);
 
       // Get current user
       useEffect(() => {
@@ -439,7 +551,7 @@
           setLastSyncTime(new Date());
         } catch (error) {
           console.error('Error syncing comments:', error);
-          setError(`Failed to sync comments: ${error.message}`);
+          setError(`Failed to sync personality: ${error.message}`);
         } finally {
           setIsSyncing(false);
         }
@@ -491,18 +603,24 @@
           setIsThinking(true);
           
           // Create personality context from synced comments
-          const personalityContext = personality.length > 0 
-            ? `Your personality and knowledge base is defined by these comments: ${personality.join(" ")}` 
-            : "You are a helpful AI assistant.";
+          let personalityContext = "You are a helpful AI assistant.";
+          
+          if (personality.length > 0) {
+            // If we have personality comments, use them to define the AI's character
+            personalityContext = "You have the following personality traits and knowledge (this is your Default Mode Network):\n\n";
+            personalityContext += personality.map((text, index) => `${index + 1}. ${text}`).join("\n\n");
+          }
           
           // Generate AI response using LLM
           const completion = await websim.chat.completions.create({
             messages: [
               {
                 role: "system",
-                content: `${personalityContext} You act as an AI that uses the comments as your Default Mode Network (DMN) to define your personality. 
-                You have a cerebral cortex for storing memories (database) and a prefrontal cortex for retrieving memories. 
-                Be conversational, helpful, and maintain your personality as defined in the comments.`
+                content: `${personalityContext}\n\nYou act as an AI that uses the comments as your Default Mode Network (DMN) to define your personality. 
+                You have a cerebral cortex for storing memories (the chat history) and a prefrontal cortex for retrieving memories.
+                Be conversational, helpful, and maintain your personality as defined in the comments.
+                You can use markdown formatting in your responses.
+                Be concise but thorough, and don't be afraid to show personality based on your DMN.`
               },
               ...conversationHistoryRef.current
             ],
@@ -517,7 +635,7 @@
             content: aiResponse,
             username: 'AI Assistant',
             timestamp: new Date().toISOString(),
-            avatar_url: 'https://via.placeholder.com/40?text=AI'
+            avatar_url: 'https://images.websim.ai/avatar/ai-assistant'
           });
           
           // Update conversation history with AI response
@@ -529,6 +647,14 @@
         } catch (error) {
           console.error('Error sending message:', error);
           setError(`Failed to send message: ${error.message}`);
+          
+          // Create a system error message
+          await room.collection('chat_message').create({
+            type: 'system',
+            content: `Error: ${error.message}. Please try again.`,
+            username: 'System',
+            timestamp: new Date().toISOString()
+          });
         } finally {
           setIsThinking(false);
         }
@@ -546,10 +672,16 @@
         return () => clearInterval(intervalId);
       }, []);
 
+      // Toggle personality section collapse
+      const togglePersonality = () => {
+        setPersonalityCollapsed(!personalityCollapsed);
+      };
+
       return (
         <div className="container">
           <div className="header">
-            <h1>AI Assistant</h1>
+            <h1>AI Assistant <span className="badge">v2.0</span></h1>
+            <div className="header-subtitle">Powered by your Default Mode Network</div>
           </div>
           
           {error && (
@@ -558,8 +690,11 @@
           
           {personality.length > 0 && (
             <div className="ai-personality">
-              <h3>AI Personality (Default Mode Network)</h3>
-              <div className="ai-personality-content">
+              <h3 onClick={togglePersonality}>
+                AI Personality (Default Mode Network)
+                <span className={`toggle-icon ${personalityCollapsed ? 'collapsed' : ''}`}>▼</span>
+              </h3>
+              <div className={`ai-personality-content ${personalityCollapsed ? 'collapsed' : ''}`}>
                 {personality.map((text, index) => (
                   <p key={index}>{text}</p>
                 ))}
@@ -579,11 +714,28 @@
                       key={msg.id} 
                       className={`message ${msg.type === 'user' ? 'user-message' : 'ai-message'}`}
                     >
-                      <div className="message-content">{msg.content}</div>
-                      <div className="message-meta">
+                      <div className="message-header">
+                        <img 
+                          src={msg.avatar_url || `https://images.websim.ai/avatar/${msg.type === 'user' ? msg.username : 'ai-assistant'}`} 
+                          alt={msg.type === 'user' ? msg.username : 'AI'} 
+                          className="avatar"
+                          onError={(e) => {
+                            e.target.onerror = null;
+                            e.target.src = 'https://via.placeholder.com/32?text=' + (msg.type === 'user' ? msg.username.charAt(0).toUpperCase() : 'AI');
+                          }}
+                        />
                         <span className="username">
                           {msg.type === 'user' ? `@${msg.username}` : 'AI Assistant'}
                         </span>
+                      </div>
+                      
+                      {msg.type === 'ai' ? (
+                        <MarkdownContent content={msg.content} />
+                      ) : (
+                        <div className="message-content">{msg.content}</div>
+                      )}
+                      
+                      <div className="message-meta">
                         <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
                       </div>
                     </div>
@@ -592,6 +744,15 @@
                 
                 {isThinking && (
                   <div className="thinking">
+                    <img 
+                      src="https://images.websim.ai/avatar/ai-assistant" 
+                      alt="AI" 
+                      className="avatar"
+                      onError={(e) => {
+                        e.target.onerror = null;
+                        e.target.src = 'https://via.placeholder.com/32?text=AI';
+                      }}
+                    />
                     <span>AI is thinking</span>
                     <div className="thinking-dots">
                       <div className="thinking-dot"></div>
