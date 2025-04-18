@@ -197,7 +197,7 @@
   <div id="root"></div>
 
   <script type="text/babel">
-    const { useState, useEffect, useRef } = React;
+    const { useState, useEffect, useRef, useCallback, useMemo } = React;
 
     // Initialize Websim database connection
     const room = new WebsimSocket();
@@ -214,31 +214,42 @@
       const conversationHistoryRef = useRef([]);
       const projectIdRef = useRef(null);
 
+      // Use stable references for the subscriber and selector functions
+      const chatMessageSubscriber = useCallback(
+        (callback) => room.collection('chat_message').subscribe(callback),
+        []
+      );
+
+      const chatMessageSelector = useCallback(() => {
+        const chatMessages = room.collection('chat_message').getList();
+        return chatMessages;
+      }, []);
+
       // Use React's useSyncExternalStore to sync with database
       const comments = React.useSyncExternalStore(
-        room.collection('comment').subscribe,
-        room.collection('comment').getList
+        useCallback((callback) => room.collection('comment').subscribe(callback), []),
+        useCallback(() => room.collection('comment').getList(), [])
       );
 
       // Use React's useSyncExternalStore for the chat messages
-      // Sort the messages by timestamp in the getList function
       const messages = React.useSyncExternalStore(
-        room.collection('chat_message').subscribe,
-        () => {
-          const chatMessages = room.collection('chat_message').getList();
-          // Return a new array sorted by timestamp to ensure React detects the change
-          return [...chatMessages].sort((a, b) => 
-            new Date(a.timestamp) - new Date(b.timestamp)
-          );
-        }
+        chatMessageSubscriber,
+        chatMessageSelector
       );
+
+      // Sort messages only when the array actually changes
+      const sortedMessages = useMemo(() => {
+        return [...messages].sort((a, b) => 
+          new Date(a.timestamp) - new Date(b.timestamp)
+        );
+      }, [messages]);
 
       // Scroll to bottom whenever messages change
       useEffect(() => {
         if (chatContainerRef.current) {
           chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
         }
-      }, [messages]);
+      }, [sortedMessages]);
 
       // Get current user
       useEffect(() => {
@@ -254,8 +265,8 @@
         fetchCurrentUser();
       }, []);
 
-      // Function to get current project ID
-      const getCurrentProjectId = async () => {
+      // Function to get current project ID - wrapped in useCallback
+      const getCurrentProjectId = useCallback(async () => {
         try {
           // Try to get the current project from websim
           const currentProject = await window.websim.getCurrentProject();
@@ -263,17 +274,17 @@
             projectIdRef.current = currentProject.id;
             return currentProject.id;
           }
-          
+
           // Fallback: For testing, you could return a hardcoded ID
           return projectIdRef.current || "defaultProjectId";
         } catch (err) {
           console.error("Error getting project ID:", err);
           return projectIdRef.current || "defaultProjectId";
         }
-      };
+      }, []);
 
-      // Function to parse comment content
-      const parseCommentContent = (comment) => {
+      // Function to parse comment content - wrapped in useCallback
+      const parseCommentContent = useCallback((comment) => {
         if (!comment.content || !comment.content.children) {
           return comment.raw_content || "No content";
         }
@@ -282,7 +293,7 @@
         let text = "";
         const extractText = (node) => {
           if (!node) return;
-          
+
           if (node.type === "text") {
             text += node.text;
           } else if (node.children && Array.isArray(node.children)) {
@@ -292,16 +303,16 @@
 
         comment.content.children.forEach(extractText);
         return text || comment.raw_content || "No content";
-      };
+      }, []);
 
-      // Helper functions to extract content components
-      const extractTextNodes = (content) => {
+      // Helper functions to extract content components - wrapped in useCallback
+      const extractTextNodes = useCallback((content) => {
         if (!content || !content.children) return [];
-        
+
         const textNodes = [];
         const findTextNodes = (node) => {
           if (!node) return;
-          
+
           if (node.type === "text") {
             textNodes.push({
               text: node.text,
@@ -314,18 +325,18 @@
             node.children.forEach(findTextNodes);
           }
         };
-        
+
         content.children.forEach(findTextNodes);
         return textNodes;
-      };
-      
-      const extractLinkNodes = (content) => {
+      }, []);
+
+      const extractLinkNodes = useCallback((content) => {
         if (!content || !content.children) return [];
-        
+
         const linkNodes = [];
         const findLinkNodes = (node) => {
           if (!node) return;
-          
+
           if (node.type === "link") {
             linkNodes.push({
               url: node.url,
@@ -335,72 +346,76 @@
             node.children.forEach(findLinkNodes);
           }
         };
-        
+
         content.children.forEach(findLinkNodes);
         return linkNodes;
-      };
-      
-      const countParagraphs = (content) => {
+      }, []);
+
+      const countParagraphs = useCallback((content) => {
         if (!content || !content.children) return 0;
         return content.children.filter(node => node.type === "paragraph").length;
-      };
+      }, []);
 
-      // Function to check if comment is a duplicate
-      const isDuplicateComment = (metadataComment, existingComments) => {
+      // Function to check if comment is a duplicate - wrapped in useCallback
+      const isDuplicateComment = useCallback((metadataComment, existingComments) => {
         // First check: exact metadata_id match
         if (existingComments.some(c => c.metadata_id === metadataComment.id)) {
           return true;
         }
-        
+
         // Second check: matching content, username, and timestamp
         const parsedContent = parseCommentContent(metadataComment);
         const username = metadataComment.author?.username || "anonymous";
         const timestamp = metadataComment.created_at;
-        
+
         return existingComments.some(c => 
           c.username === username && 
           c.message === parsedContent && 
           c.timestamp === timestamp
         );
-      };
+      }, [parseCommentContent]);
 
-      // Function to fetch metadata comments (AI's personality/DMN)
-      const fetchMetadataComments = async () => {
+      // Function to fetch metadata comments (AI's personality/DMN) - wrapped in useCallback
+      const fetchMetadataComments = useCallback(async () => {
         try {
           setIsSyncing(true);
           setError(null);
-          
+
           // Get current logged-in user
           const currentUser = await window.websim.getUser();
           const currentUsername = currentUser?.username;
-          
+
           const projectId = await getCurrentProjectId();
           if (!projectId) {
             throw new Error("Could not determine project ID");
           }
-          
+
           // Make the actual API call to get metadata comments
           const response = await fetch(`/api/v1/projects/${projectId}/comments`);
-          
+
           if (!response.ok) {
             throw new Error(`API returned status ${response.status}`);
           }
-          
+
           const data = await response.json();
           const metadataComments = data.comments?.data || [];
-          
+
           // Extract comment content for AI personality
           const personalityTexts = metadataComments.map(item => parseCommentContent(item.comment));
-          setPersonality(personalityTexts);
-          
+
+          // Only update the personality state if it has actually changed
+          if (JSON.stringify(personalityTexts) !== JSON.stringify(personality)) {
+            setPersonality(personalityTexts);
+          }
+
           // Get all existing comments for comparison
           const allExistingComments = room.collection('comment').getList();
-          
+
           // Process and sync each comment to our database
           for (const item of metadataComments) {
             const comment = item.comment;
             const commentUsername = comment.author?.username || "anonymous";
-            
+
             // Only sync if the comment username matches the current user's username
             if (currentUsername === commentUsername) {
               // Check if comment already exists in our database using comprehensive duplicate check
@@ -413,7 +428,7 @@
                   timestamp: comment.created_at,
                   avatar_url: comment.author?.avatar_url || null,
                   parent_comment_id: comment.parent_comment_id,
-                  
+
                   // Store author data in individual columns instead of as a whole object
                   author_id: comment.author?.id || null,
                   author_created_at: comment.author?.created_at || null,
@@ -422,7 +437,7 @@
                   author_discord_username: comment.author?.discord_username || null,
                   author_discord_id: comment.author?.discord_id || null,
                   author_is_admin: comment.author?.is_admin || false,
-                  
+
                   // Store all additional metadata
                   project_id: comment.project_id,
                   raw_content: comment.raw_content,
@@ -431,7 +446,7 @@
                   pinned_by: comment.pinned_by,
                   reactions: comment.reactions,
                   reply_count: comment.reply_count || 0,
-                  
+
                   // Store content object in individual fields
                   content_type: comment.content?.type || null,
                   content_children: comment.content?.children || [],
@@ -443,7 +458,7 @@
               }
             }
           }
-          
+
           setLastSyncTime(new Date());
         } catch (error) {
           console.error('Error syncing comments:', error);
@@ -451,10 +466,10 @@
         } finally {
           setIsSyncing(false);
         }
-      };
+      }, [getCurrentProjectId, isDuplicateComment, parseCommentContent, extractTextNodes, extractLinkNodes, countParagraphs, personality]);
 
-      // Format timestamp
-      const formatTimestamp = (timestamp) => {
+      // Format timestamp - wrapped in useCallback
+      const formatTimestamp = useCallback((timestamp) => {
         try {
           const date = new Date(timestamp);
           return date.toLocaleString();
@@ -462,19 +477,19 @@
           console.error("Error formatting timestamp:", timestamp, e);
           return "Unknown time";
         }
-      };
+      }, []);
 
-      // Handle sending a message to the AI
-      const handleSendMessage = async () => {
+      // Handle sending a message to the AI - wrapped in useCallback
+      const handleSendMessage = useCallback(async () => {
         if (!message.trim()) return;
-        
+
         try {
           // Get current user
           const user = currentUser || await window.websim.getUser();
           const username = user?.username || 'anonymous';
-          
+
           console.log("Sending message as:", username);
-          
+
           // Save user message to the database
           const userMessage = await room.collection('chat_message').create({
             type: 'user',
@@ -483,31 +498,31 @@
             timestamp: new Date().toISOString(),
             avatar_url: user?.avatar_url || `https://images.websim.ai/avatar/${username}`
           });
-          
+
           console.log("User message saved:", userMessage);
-          
+
           // Update conversation history for context
           conversationHistoryRef.current.push({
             role: "user",
             content: message
           });
-          
+
           // Only keep the last 10 messages to avoid token limits
           if (conversationHistoryRef.current.length > 10) {
             conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
           }
-          
+
           // Clear the input
           setMessage("");
-          
+
           // Show thinking indicator
           setIsThinking(true);
-          
+
           // Create personality context from synced comments
           const personalityContext = personality.length > 0 
             ? `Your personality and knowledge base is defined by these comments: ${personality.join(" ")}` 
             : "You are a helpful AI assistant.";
-          
+
           // Generate AI response using LLM
           const completion = await websim.chat.completions.create({
             messages: [
@@ -520,12 +535,12 @@
               ...conversationHistoryRef.current
             ],
           });
-          
+
           // Get AI response
           const aiResponse = completion.content;
-          
+
           console.log("AI response generated:", aiResponse);
-          
+
           // Save AI response to the database
           const savedAiMessage = await room.collection('chat_message').create({
             type: 'ai',
@@ -534,50 +549,45 @@
             timestamp: new Date().toISOString(),
             avatar_url: 'https://via.placeholder.com/40?text=AI'
           });
-          
+
           console.log("AI message saved:", savedAiMessage);
-          
+
           // Update conversation history with AI response
           conversationHistoryRef.current.push({
             role: "assistant",
             content: aiResponse
           });
-          
+
         } catch (error) {
           console.error('Error sending message:', error);
           setError(`Failed to send message: ${error.message}`);
         } finally {
           setIsThinking(false);
         }
-      };
+      }, [message, currentUser, personality]);
 
       // Set up periodic sync for personality/DMN comments
       useEffect(() => {
         // Initial fetch
         fetchMetadataComments();
-        
+
         // Set up interval for periodic sync (7 seconds)
         const intervalId = setInterval(fetchMetadataComments, 7000);
-        
+
         // Clean up on unmount
         return () => clearInterval(intervalId);
-      }, []);
-
-      // Debug messages collection whenever it changes
-      useEffect(() => {
-        console.log("Current messages in database:", messages);
-      }, [messages]);
+      }, [fetchMetadataComments]);
 
       return (
         <div className="container">
           <div className="header">
             <h1>AI Assistant</h1>
           </div>
-          
+
           {error && (
             <div className="error-message">{error}</div>
           )}
-          
+
           {personality.length > 0 && (
             <div className="ai-personality">
               <h3>AI Personality (Default Mode Network)</h3>
@@ -588,13 +598,13 @@
               </div>
             </div>
           )}
-          
+
           <div className="chat-container" ref={chatContainerRef}>
-            {messages.length === 0 ? (
+            {sortedMessages.length === 0 ? (
               <div className="status">Start chatting with the AI assistant!</div>
             ) : (
               <>
-                {messages.map(msg => (
+                {sortedMessages.map(msg => (
                   <div 
                     key={msg.id} 
                     className={`message ${msg.type === 'user' ? 'user-message' : 'ai-message'}`}
@@ -631,7 +641,7 @@
               </>
             )}
           </div>
-          
+
           <div className="message-input-container">
             <input
               type="text"
@@ -650,7 +660,7 @@
               Send
             </button>
           </div>
-          
+
           {lastSyncTime && (
             <div className="sync-indicator">
               <div className="sync-dot"></div>
