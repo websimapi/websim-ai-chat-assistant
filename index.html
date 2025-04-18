@@ -40,11 +40,16 @@
       max-width: 80%;
       animation: fadeIn 0.3s ease-in-out;
       position: relative;
+      display: flex;
+      flex-direction: row;
+      align-items: flex-end;
+      gap: 10px;
     }
     .user-message {
       background: #e1f5fe;
       margin-left: auto;
       border-bottom-right-radius: 0;
+      flex-direction: row-reverse;
     }
     .ai-message {
       background: #f0f0f0;
@@ -53,6 +58,8 @@
     }
     .message-content {
       line-height: 1.5;
+      word-break: break-word;
+      flex: 1;
     }
     .message-meta {
       font-size: 12px;
@@ -60,6 +67,7 @@
       margin-top: 5px;
       display: flex;
       justify-content: space-between;
+      gap: 12px;
     }
     .username {
       font-weight: bold;
@@ -72,6 +80,9 @@
       margin-top: 20px;
       position: sticky;
       bottom: 0;
+      background: #f5f5f5;
+      z-index: 10;
+      padding-bottom: 10px;
     }
     .message-input {
       flex: 1;
@@ -107,6 +118,15 @@
       from { opacity: 0; transform: translateY(10px); }
       to { opacity: 1; transform: translateY(0); }
     }
+    .avatar {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      object-fit: cover;
+      flex-shrink: 0;
+      background: #eee;
+      border: 1px solid #ddd;
+    }
     .sync-indicator {
       position: fixed;
       bottom: 10px;
@@ -118,6 +138,7 @@
       font-size: 12px;
       display: flex;
       align-items: center;
+      z-index: 999;
     }
     .sync-dot {
       width: 8px;
@@ -146,6 +167,8 @@
       padding: 10px;
       color: #888;
       font-style: italic;
+      gap: 10px;
+      margin-top: 10px;
     }
     .thinking-dots {
       display: flex;
@@ -207,55 +230,48 @@
       const [error, setError] = useState(null);
       const [message, setMessage] = useState("");
       const [isThinking, setIsThinking] = useState(false);
-      const [personality, setPersonality] = useState([]);
-      const [metadataComments, setMetadataComments] = useState([]);
+      const [personality, setPersonality] = useState([]); 
+      const [metadataComments, setMetadataComments] = useState([]); 
       const [currentUser, setCurrentUser] = useState(null);
       const chatContainerRef = useRef(null);
       const conversationHistoryRef = useRef([]);
       const projectIdRef = useRef(null);
 
-      // Fetch all chat messages in the room
       const messages = React.useSyncExternalStore(
         room.collection('chat_message').subscribe,
         room.collection('chat_message').getList
       );
 
-      // Always auto-scroll to the bottom of chat on message update
       useEffect(() => {
         if (chatContainerRef.current) {
           chatContainerRef.current.scrollTop = chatContainerRef.current.scrollHeight;
         }
       }, [messages, isThinking]);
 
-      // Fetch the current user info
       useEffect(() => {
-        const fetchCurrentUser = async () => {
+        async function fetchCurrentUser() {
           try {
             const user = await window.websim.getUser();
             setCurrentUser(user);
-          } catch (err) {
+          } catch (e) {
             setCurrentUser(null);
           }
-        };
+        }
         fetchCurrentUser();
       }, []);
 
-      // Get current project ID and cache it in ref (for comments fetch)
       const getCurrentProjectId = async () => {
         if (projectIdRef.current) return projectIdRef.current;
         try {
-          const currentProject = await window.websim.getCurrentProject();
-          if (currentProject && currentProject.id) {
-            projectIdRef.current = currentProject.id;
-            return currentProject.id;
+          const current = await window.websim.getCurrentProject();
+          if (current && current.id) {
+            projectIdRef.current = current.id;
+            return current.id;
           }
-          return null;
-        } catch (err) {
-          return null;
-        }
+        } catch (err) {}
+        return null;
       };
 
-      // Parse out readable text from DocumentNode-style comment
       function parseCommentText(comment) {
         function walk(node) {
           if (!node) return '';
@@ -271,7 +287,6 @@
         return '';
       }
 
-      // Fetch metadata comments, no longer storing in local DB, just for personality/DMN context
       const fetchMetadataComments = async () => {
         setIsSyncing(true);
         setError(null);
@@ -284,7 +299,6 @@
           const allComments = data.comments?.data || [];
           setMetadataComments(allComments);
 
-          // Compose DMN personality summary from comments pulled from metadata
           const texts = allComments.map(item => parseCommentText(item.comment)).filter(Boolean);
           setPersonality(texts);
 
@@ -296,7 +310,6 @@
         }
       };
 
-      // Format ISO timestamp for message display
       function formatTimestamp(ts) {
         try {
           const d = new Date(ts);
@@ -306,7 +319,6 @@
         }
       }
 
-      // Long-term memory storage (as Cerebral Cortex)
       async function storeMemory(text, context) {
         try {
           await room.collection('long_term_memory').create({
@@ -316,11 +328,10 @@
             username: currentUser?.username || 'system'
           });
         } catch (err) {
-          // swallow
+          /* swallow */
         }
       }
 
-      // Simple memory retrieval (as Prefrontal Cortex)
       function retrieveRelevantMemories() {
         try {
           const memories = room.collection('long_term_memory').getList();
@@ -330,39 +341,35 @@
         }
       }
 
-      // Handle user sending a message to the AI
       async function handleSendMessage() {
         if (!message.trim()) return;
+        setError(null);
         try {
-          setError(null);
-          // Store user chat
-          const user = currentUser || await window.websim.getUser();
+          let user = currentUser;
+          if (!user) user = await window.websim.getUser();
           const username = user?.username || 'anonymous';
           await room.collection('chat_message').create({
             type: 'user',
             content: message,
-            username: username,
+            username,
             timestamp: new Date().toISOString(),
             avatar_url: user?.avatar_url || `https://images.websim.ai/avatar/${username}`
           });
-          // Push into local conversation history
+
           conversationHistoryRef.current.push({ role: "user", content: message });
           conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
 
           setMessage("");
           setIsThinking(true);
 
-          // Compose DMN/personality context (real-time from comments)
           const personalityContext = personality.length > 0
             ? `Your personality is defined by these comments: ${personality.join(" ")}`
             : "You are a helpful assistant.";
 
-          // Retrieve long term memories for context
           const memoryContext = retrieveRelevantMemories()
             ? `Here are relevant memories from your long-term storage: ${retrieveRelevantMemories()}`
             : "";
 
-          // Generate LLM AI response
           const completion = await websim.chat.completions.create({
             messages: [
               {
@@ -375,8 +382,8 @@
               ...conversationHistoryRef.current
             ]
           });
-          const aiResponse = completion.content;
-          // Store AI response in chat
+          const aiResponse = completion.content || "[No response generated]";
+          
           await room.collection('chat_message').create({
             type: "ai",
             content: aiResponse,
@@ -388,7 +395,6 @@
           conversationHistoryRef.current.push({ role: "assistant", content: aiResponse });
           conversationHistoryRef.current = conversationHistoryRef.current.slice(-10);
 
-          // If the chat contains "remember this" or is long, store as memory
           if (aiResponse.length > 100 || message.toLowerCase().includes("remember this")) {
             await storeMemory(aiResponse, `User: ${message}\nAI: ${aiResponse}`);
           }
@@ -399,7 +405,6 @@
         }
       }
 
-      // Establish 7-second cycle to refresh DMN comments from server
       useEffect(() => {
         fetchMetadataComments();
         const intervalId = setInterval(fetchMetadataComments, 7000);
@@ -428,17 +433,31 @@
             ) : (
               <>
                 {messages
-                  .filter(msg => typeof msg === 'object' && msg && msg.content) // Defensive
+                  .filter(msg => typeof msg === 'object' && msg && msg.content)
                   .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
                   .map(msg => (
                     <div
-                      key={msg.id}
+                      key={msg.id || (msg.timestamp + msg.username + msg.content)}
                       className={`message ${msg.type === "user" ? 'user-message' : 'ai-message'}`}
                     >
-                      <div className="message-content">{msg.content}</div>
-                      <div className="message-meta">
-                        <span className="username">{msg.type === "user" ? `@${msg.username}` : 'AI Assistant'}</span>
-                        <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
+                      <img
+                        className="avatar"
+                        src={msg.avatar_url || (msg.type === "ai"
+                          ? 'https://via.placeholder.com/40?text=AI'
+                          : msg.username
+                            ? `https://images.websim.ai/avatar/${msg.username}` : 'https://via.placeholder.com/40?text=U')}
+                        alt="avatar"
+                      />
+                      <div style={{ width: '100%' }}>
+                        <div className="message-content">{msg.content}</div>
+                        <div className="message-meta">
+                          <span className="username">
+                            {msg.type === "user"
+                              ? (msg.username ? `@${msg.username}` : "User")
+                              : "AI Assistant"}
+                          </span>
+                          <span className="timestamp">{formatTimestamp(msg.timestamp)}</span>
+                        </div>
                       </div>
                     </div>
                   ))
@@ -465,6 +484,7 @@
               onChange={e => setMessage(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendMessage(); } }}
               disabled={isThinking}
+              autoFocus
             />
             <button
               className="send-button"
@@ -484,7 +504,6 @@
       );
     }
 
-    // Render React component
     const root = ReactDOM.createRoot(document.getElementById('root'));
     root.render(<AIChat />);
   </script>
